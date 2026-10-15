@@ -68,7 +68,7 @@ Database: PostgreSQL. Seven tables.
 | other_charge | NUMERIC(10,2) | NOT NULL, DEFAULT 0 |
 | status | VARCHAR(20) | NOT NULL, DEFAULT 'ACTIVE', CHECK in (ACTIVE, COMPLETED) |
 
-### transaction
+### payment
 | Column | Type | Constraints |
 |---|---|---|
 | transaction_id | INT GENERATED ALWAYS AS IDENTITY | PRIMARY KEY |
