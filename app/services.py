@@ -10,6 +10,7 @@ ADVANCE_PERCENT = Decimal("0.20")
 
 # Money columns are NUMERIC(10,2), so we keep exactly 2 decimal places.
 TWO_PLACES = Decimal("0.01")
+BOOKING_STATUSES = ("CONFIRMED", "CANCELLED", "COMPLETED")
 
 
 def search_available_vehicles(
@@ -318,3 +319,90 @@ def create_booking(
         "advance_amount": advance,
         "status": booking_status,
     }
+
+def get_customer_bookings(
+    customer_id: int,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Return a customer's bookings, newest rental start first.
+
+    Optional status filter: CONFIRMED, CANCELLED or COMPLETED
+    (case-insensitive). Raises ValueError for invalid input or an
+    unknown customer. A customer with no bookings gets an empty list.
+    """
+
+    # 1. Validate the inputs.
+    if (
+        isinstance(customer_id, bool)
+        or not isinstance(customer_id, int)
+        or customer_id < 1
+    ):
+        raise ValueError("customer_id must be a positive integer.")
+
+    # An empty or whitespace-only status means "no filter".
+    if isinstance(status, str) and not status.strip():
+        status = None
+
+    conditions = ["b.customer_id = %s"]
+    parameters: list[Any] = [customer_id]
+
+    if status is not None:
+        if not isinstance(status, str):
+            raise ValueError("Status must be text.")
+
+        status = status.strip().upper()
+
+        if status not in BOOKING_STATUSES:
+            raise ValueError(
+                "Status must be one of: "
+                + ", ".join(BOOKING_STATUSES)
+            )
+
+        conditions.append("b.status = %s")
+        parameters.append(status)
+
+    # 2. Build the query. Dates are inclusive, so days = end - start + 1.
+    query = f"""
+        SELECT
+            b.booking_id,
+            b.booking_date,
+            b.start_date,
+            b.end_date,
+            (b.end_date - b.start_date + 1) AS days,
+            b.status,
+            v.vehicle_id,
+            v.registration_no,
+            m.brand,
+            m.model_name,
+            m.daily_rate,
+            m.daily_rate * (b.end_date - b.start_date + 1)
+                AS total_amount
+        FROM booking AS b
+        JOIN vehicle AS v
+            ON v.vehicle_id = b.vehicle_id
+        JOIN vehicle_model AS m
+            ON m.model_id = v.model_id
+        WHERE {" AND ".join(conditions)}
+        ORDER BY b.start_date DESC, b.booking_id DESC
+    """
+
+    # 3. Run it, and check that the customer exists in the same connection.
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM customer WHERE customer_id = %s",
+                (customer_id,),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Customer not found.")
+
+            cursor.execute(query, parameters)
+            rows = cursor.fetchall()
+
+            column_names = [
+                column.name for column in cursor.description
+            ]
+
+    # 4. Return a list of dictionaries for the UI teammate.
+    return [dict(zip(column_names, row)) for row in rows]
