@@ -1,7 +1,15 @@
 from datetime import date
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 from app.db import get_connection
+
+# Share of the total rental cost collected as the advance payment
+# when the caller does not give an explicit amount.
+ADVANCE_PERCENT = Decimal("0.20")
+
+# Money columns are NUMERIC(10,2), so we keep exactly 2 decimal places.
+TWO_PLACES = Decimal("0.01")
 
 
 def search_available_vehicles(
@@ -156,3 +164,157 @@ def search_available_vehicles(
         dict(zip(column_names, row))
         for row in rows
     ]
+
+def create_booking(
+    customer_id: int,
+    vehicle_id: int,
+    start_date: date,
+    end_date: date,
+    advance_amount: Decimal | int | str | None = None,
+) -> dict[str, Any]:
+    """
+    Create a CONFIRMED booking and its ADVANCE payment together.
+
+    Both rows are saved in one database transaction: either both
+    exist afterwards, or neither does.
+
+    Raises ValueError for invalid input, an unknown customer or
+    vehicle, an unavailable vehicle, or overlapping bookings.
+    """
+
+    # 1. Validate the inputs before touching the database.
+    for name, value in (
+        ("customer_id", customer_id),
+        ("vehicle_id", vehicle_id),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} must be a positive integer.")
+
+    if start_date > end_date:
+        raise ValueError("End date must be on or after start date.")
+
+    if start_date < date.today():
+        raise ValueError("Start date cannot be in the past.")
+
+    if advance_amount is not None:
+        if isinstance(advance_amount, bool):
+            raise ValueError("Advance amount must be a number.")
+        try:
+            advance_amount = Decimal(str(advance_amount))
+        except InvalidOperation:
+            raise ValueError("Advance amount must be a number.") from None
+        if not advance_amount.is_finite():
+            raise ValueError("Advance amount must be a finite number.")
+
+    # Both dates are inclusive: 1 Nov to 1 Nov is one billable day.
+    days = (end_date - start_date).days + 1
+
+    # 2. Everything inside this block is ONE database transaction.
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+
+            # 2a. The customer must exist.
+            cursor.execute(
+                "SELECT 1 FROM customer WHERE customer_id = %s",
+                (customer_id,),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Customer not found.")
+
+            # 2b. Fetch AND lock the vehicle row (see explanation below).
+            cursor.execute(
+                """
+                SELECT v.status, vm.daily_rate
+                FROM vehicle AS v
+                JOIN vehicle_model AS vm
+                    ON vm.model_id = v.model_id
+                WHERE v.vehicle_id = %s
+                FOR UPDATE OF v
+                """,
+                (vehicle_id,),
+            )
+            vehicle_row = cursor.fetchone()
+            if vehicle_row is None:
+                raise ValueError("Vehicle not found.")
+
+            vehicle_status, daily_rate = vehicle_row
+            if vehicle_status != "AVAILABLE":
+                raise ValueError(
+                    f"Vehicle is not available (status: {vehicle_status})."
+                )
+
+            # 2c. Work out the money.
+            total_amount = (Decimal(str(daily_rate)) * days).quantize(TWO_PLACES)
+
+            if advance_amount is None:
+                advance = (total_amount * ADVANCE_PERCENT).quantize(
+                    TWO_PLACES, rounding=ROUND_HALF_UP
+                )
+            else:
+                advance = advance_amount.quantize(
+                    TWO_PLACES, rounding=ROUND_HALF_UP
+                )
+
+            if advance <= 0 or advance > total_amount:
+                raise ValueError(
+                    "Advance amount must be more than 0 and "
+                    f"at most the total amount ({total_amount})."
+                )
+
+            # 2d. Reject the booking if it overlaps a confirmed one.
+            cursor.execute(
+                """
+                SELECT 1
+                FROM booking
+                WHERE vehicle_id = %s
+                  AND status = 'CONFIRMED'
+                  AND start_date <= %s
+                  AND end_date >= %s
+                LIMIT 1
+                """,
+                (vehicle_id, end_date, start_date),
+            )
+            if cursor.fetchone() is not None:
+                raise ValueError(
+                    "Vehicle is already booked for part of these dates."
+                )
+
+            # 2e. Insert the booking.
+            cursor.execute(
+                """
+                INSERT INTO booking
+                    (customer_id, vehicle_id, start_date, end_date)
+                VALUES (%s, %s, %s, %s)
+                RETURNING booking_id, booking_date, status
+                """,
+                (customer_id, vehicle_id, start_date, end_date),
+            )
+            booking_id, booking_date, booking_status = cursor.fetchone()
+
+            # 2f. Insert the ADVANCE payment (rental_id stays NULL).
+            cursor.execute(
+                """
+                INSERT INTO payment
+                    (booking_id, rental_id, transaction_type, amount)
+                VALUES (%s, NULL, 'ADVANCE', %s)
+                RETURNING transaction_id
+                """,
+                (booking_id, advance),
+            )
+            (transaction_id,) = cursor.fetchone()
+
+    # 3. Reaching this line means the transaction was committed.
+    return {
+        "booking_id": booking_id,
+        "transaction_id": transaction_id,
+        "customer_id": customer_id,
+        "vehicle_id": vehicle_id,
+        "booking_date": booking_date,
+        "start_date": start_date,
+        "end_date": end_date,
+        "days": days,
+        "daily_rate": daily_rate,
+        "total_amount": total_amount,
+        "advance_amount": advance,
+        "status": booking_status,
+    }
