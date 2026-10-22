@@ -43,7 +43,7 @@ def search_available_vehicles(
     # 2. Require available vehicles and exclude overlapping
     # confirmed bookings.
     conditions = [
-        "v.status = 'AVAILABLE'",
+        "v.status <> 'UNAVAILABLE'",
         """
         NOT EXISTS (
             SELECT 1
@@ -239,7 +239,7 @@ def create_booking(
                 raise ValueError("Vehicle not found.")
 
             vehicle_status, daily_rate = vehicle_row
-            if vehicle_status != "AVAILABLE":
+            if vehicle_status == "UNAVAILABLE":
                 raise ValueError(
                     f"Vehicle is not available (status: {vehicle_status})."
                 )
