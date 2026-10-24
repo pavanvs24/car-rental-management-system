@@ -1,0 +1,10 @@
+[theme]
+base="dark"
+primaryColor="#ea4545"          # Premium Gold/Amber for buttons and pricing tiers
+backgroundColor="#0A0F18"       # Deep Midnight Black for a luxury vehicle background
+secondaryBackgroundColor="#161F30" # Slick Charcoal for vehicle cards & the search sidebar
+textColor="#FFFFFF"             # Crisp White for readability
+font="sans serif"
+
+[client]
+showSidebarNavigation = false
