@@ -406,3 +406,119 @@ def get_customer_bookings(
 
     # 4. Return a list of dictionaries for the UI teammate.
     return [dict(zip(column_names, row)) for row in rows]
+
+
+def cancel_booking(
+    booking_id: int,
+    customer_id: int | None = None,
+) -> dict[str, Any]:
+    """
+    Cancel a CONFIRMED booking that has not been picked up yet.
+
+    If customer_id is given, the booking must belong to that
+    customer (customer-side cancel). If it is omitted, the call is
+    treated as an admin cancel.
+
+    The advance payment is kept on record; the returned
+    'advance_paid' tells the caller how much was paid so a refund
+    can be handled outside the database.
+
+    Raises ValueError for invalid input, an unknown booking, a booking
+    that belongs to someone else, a booking that is not CONFIRMED, or
+    a booking whose vehicle has already been picked up.
+    """
+
+    # 1. Validate the inputs.
+    if (
+        isinstance(booking_id, bool)
+        or not isinstance(booking_id, int)
+        or booking_id < 1
+    ):
+        raise ValueError("booking_id must be a positive integer.")
+
+    if customer_id is not None and (
+        isinstance(customer_id, bool)
+        or not isinstance(customer_id, int)
+        or customer_id < 1
+    ):
+        raise ValueError("customer_id must be a positive integer.")
+
+    # 2. Everything inside this block is ONE database transaction.
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+
+            # 2a. Fetch AND lock the booking row.
+            cursor.execute(
+                """
+                SELECT customer_id, vehicle_id, start_date, end_date, status
+                FROM booking
+                WHERE booking_id = %s
+                FOR UPDATE
+                """,
+                (booking_id,),
+            )
+            booking_row = cursor.fetchone()
+            if booking_row is None:
+                raise ValueError("Booking not found.")
+
+            (
+                owner_id,
+                vehicle_id,
+                start_date,
+                end_date,
+                current_status,
+            ) = booking_row
+
+            # 2b. A customer may only cancel their own booking.
+            if customer_id is not None and owner_id != customer_id:
+                raise ValueError("Booking not found.")
+
+            # 2c. Only CONFIRMED bookings can be cancelled.
+            if current_status != "CONFIRMED":
+                raise ValueError(
+                    "Only CONFIRMED bookings can be cancelled "
+                    f"(status: {current_status})."
+                )
+
+            # 2d. Not after the vehicle has been picked up.
+            cursor.execute(
+                "SELECT 1 FROM rental WHERE booking_id = %s",
+                (booking_id,),
+            )
+            if cursor.fetchone() is not None:
+                raise ValueError(
+                    "Booking cannot be cancelled: "
+                    "the vehicle has already been picked up."
+                )
+
+            # 2e. Cancel it.
+            cursor.execute(
+                """
+                UPDATE booking
+                SET status = 'CANCELLED'
+                WHERE booking_id = %s
+                """,
+                (booking_id,),
+            )
+
+            # 2f. How much has been paid for this booking so far?
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(amount), 0)
+                FROM payment
+                WHERE booking_id = %s
+                """,
+                (booking_id,),
+            )
+            (advance_paid,) = cursor.fetchone()
+
+    # 3. Reaching this line means the transaction was committed.
+    return {
+        "booking_id": booking_id,
+        "customer_id": owner_id,
+        "vehicle_id": vehicle_id,
+        "start_date": start_date,
+        "end_date": end_date,
+        "status": "CANCELLED",
+        "advance_paid": advance_paid,
+    }
