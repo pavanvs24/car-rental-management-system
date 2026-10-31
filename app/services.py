@@ -522,3 +522,262 @@ def cancel_booking(
         "status": "CANCELLED",
         "advance_paid": advance_paid,
     }
+
+def _clean_text_list(
+    name: str,
+    value: Any,
+    *,
+    upper: bool = False,
+) -> list[str] | None:
+    """
+    Turn a UI filter value into a clean list of lower-case
+    (or upper-case, if upper=True) strings.
+
+    Returns None when the filter should be ignored: the value is
+    missing, empty, or contains the UI's "All" option.
+    """
+
+    if value is None:
+        return None
+
+    # A single text value is treated as a one-item list.
+    if isinstance(value, str):
+        value = [value]
+
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError(f"Filter '{name}' must be a list of text values.")
+
+    cleaned: list[str] = []
+
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(
+                f"Filter '{name}' must contain only text values."
+            )
+
+        item = item.strip()
+
+        if not item:
+            continue
+
+        if item.lower() == "all":
+            return None
+
+        cleaned.append(item.upper() if upper else item.lower())
+
+    return cleaned or None
+
+
+def _clean_seat_list(value: Any) -> list[int] | None:
+    """Same idea as _clean_text_list, for a list of seat counts."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, (int, str)) and not isinstance(value, bool):
+        value = [value]
+
+    if not isinstance(value, (list, tuple, set)):
+        raise ValueError("Filter 'seats' must be a list of whole numbers.")
+
+    cleaned: list[int] = []
+
+    for item in value:
+        if isinstance(item, str):
+            item = item.strip()
+
+            if not item:
+                continue
+
+            if item.lower() == "all":
+                return None
+
+            try:
+                item = int(item)
+            except ValueError:
+                raise ValueError(
+                    "Filter 'seats' must contain whole numbers."
+                ) from None
+
+        if isinstance(item, bool) or not isinstance(item, int) or item < 1:
+            raise ValueError(
+                "Filter 'seats' must contain positive whole numbers."
+            )
+
+        cleaned.append(item)
+
+    return cleaned or None
+
+
+def _clean_rate(name: str, value: Any) -> Decimal | None:
+    """Validate a daily-rate limit. None or blank text means 'no limit'."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, str) and not value.strip():
+        return None
+
+    if isinstance(value, bool):
+        raise ValueError(f"Filter '{name}' must be a number.")
+
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        raise ValueError(f"Filter '{name}' must be a number.") from None
+
+    if not number.is_finite() or number < 0:
+        raise ValueError(f"Filter '{name}' must be a non-negative number.")
+
+    return number
+
+
+def search_available_vehicles(
+    start_date: date,
+    end_date: date,
+    filters: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Return vehicles available throughout the requested date range.
+
+    Vehicles with status UNAVAILABLE are excluded, and so are vehicles
+    with a CONFIRMED booking that overlaps the dates (both dates are
+    inclusive).
+
+    Optional filters (the keys the Streamlit page sends):
+        brand           list of brand names (case-insensitive)
+        model           list of model names (case-insensitive)
+        fuel_type       list, e.g. ["PETROL"] (case-insensitive)
+        transmission    list, e.g. ["MANUAL"] (case-insensitive)
+        seats           list of seat counts, e.g. [4, 5]
+        min_daily_rate  number: daily_rate >= value
+        max_daily_rate  number: daily_rate <= value
+
+    A filter that is missing, None, empty, or contains "All" is
+    ignored. Unsupported filter names and invalid values raise
+    ValueError.
+    """
+
+    # 1. Validate the requested dates.
+    if start_date > end_date:
+        raise ValueError("End date must be on or after start date.")
+
+    # 2. Exclude UNAVAILABLE vehicles and overlapping confirmed bookings.
+    conditions = [
+        "v.status <> 'UNAVAILABLE'",
+        """
+        NOT EXISTS (
+            SELECT 1
+            FROM booking AS b
+            WHERE b.vehicle_id = v.vehicle_id
+              AND b.status = 'CONFIRMED'
+              AND b.start_date <= %s
+              AND b.end_date >= %s
+        )
+        """,
+    ]
+    parameters: list[Any] = [end_date, start_date]
+
+    # 3. Reject filter names we do not support.
+    filters = filters or {}
+    allowed = {
+        "brand",
+        "model",
+        "fuel_type",
+        "transmission",
+        "seats",
+        "min_daily_rate",
+        "max_daily_rate",
+    }
+    unknown = [str(key) for key in filters if key not in allowed]
+
+    if unknown:
+        raise ValueError(
+            "Unsupported vehicle filter: " + ", ".join(sorted(unknown))
+        )
+
+    # 4. Add only the filters that have a real value.
+    brands = _clean_text_list("brand", filters.get("brand"))
+    if brands:
+        conditions.append("LOWER(vm.brand) = ANY(%s)")
+        parameters.append(brands)
+
+    models = _clean_text_list("model", filters.get("model"))
+    if models:
+        conditions.append("LOWER(vm.model_name) = ANY(%s)")
+        parameters.append(models)
+
+    fuel_types = _clean_text_list(
+        "fuel_type", filters.get("fuel_type"), upper=True
+    )
+    if fuel_types:
+        conditions.append("vm.fuel_type = ANY(%s)")
+        parameters.append(fuel_types)
+
+    transmissions = _clean_text_list(
+        "transmission", filters.get("transmission"), upper=True
+    )
+    if transmissions:
+        conditions.append("vm.transmission = ANY(%s)")
+        parameters.append(transmissions)
+
+    seats = _clean_seat_list(filters.get("seats"))
+    if seats:
+        conditions.append("vm.seats = ANY(%s)")
+        parameters.append(seats)
+
+    min_rate = _clean_rate("min_daily_rate", filters.get("min_daily_rate"))
+    max_rate = _clean_rate("max_daily_rate", filters.get("max_daily_rate"))
+
+    if min_rate is not None and max_rate is not None and min_rate > max_rate:
+        raise ValueError(
+            "Minimum daily rate cannot be higher than maximum daily rate."
+        )
+
+    if min_rate is not None:
+        conditions.append("vm.daily_rate >= %s")
+        parameters.append(min_rate)
+
+    if max_rate is not None:
+        conditions.append("vm.daily_rate <= %s")
+        parameters.append(max_rate)
+
+    # 5. Fetch vehicles and their model details.
+    query = f"""
+        SELECT
+            v.vehicle_id,
+            v.registration_no,
+            v.odometer,
+            v.status,
+            vm.model_id,
+            vm.brand,
+            vm.model_name,
+            vm.seats,
+            vm.transmission,
+            vm.fuel_type,
+            vm.daily_rate
+        FROM vehicle AS v
+        JOIN vehicle_model AS vm
+            ON vm.model_id = v.model_id
+        WHERE {" AND ".join(conditions)}
+        ORDER BY
+            vm.daily_rate ASC,
+            vm.brand ASC,
+            vm.model_name ASC
+    """
+
+    # 6. Execute the parameterized query.
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, parameters)
+            rows = cursor.fetchall()
+
+            column_names = [
+                column.name for column in cursor.description
+            ]
+
+    # 7. Return a list of dictionaries for the UI teammate.
+    return [
+        dict(zip(column_names, row))
+        for row in rows
+    ]
