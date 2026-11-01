@@ -1,20 +1,14 @@
-
 import os
-
+import streamlit as st
 import psycopg
-from dotenv import load_dotenv
-
-# Load database settings from the project's .env file.
-load_dotenv()
 
 
 def get_connection():
     """Create and return a connection to PostgreSQL."""
 
-    required_settings = ["DB_NAME", "DB_USER", "DB_PASSWORD"]
+    required_settings = ["dbname", "user", "password"]
     missing_settings = [
-        name for name in required_settings
-        if not os.getenv(name)
+        name for name in required_settings if name not in st.secrets.get('postgres', {})
     ]
 
     if missing_settings:
@@ -23,14 +17,7 @@ def get_connection():
             + ", ".join(missing_settings)
         )
 
-    return psycopg.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        connect_timeout=5,
-    )
+    return psycopg.connect(kwargs = st.secrets["postgres"])
 
 
 def test_connection():
