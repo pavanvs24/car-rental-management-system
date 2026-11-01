@@ -1,7 +1,6 @@
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
-
 from app.db import get_connection
 
 # Share of the total rental cost collected as the advance payment
@@ -14,19 +13,21 @@ BOOKING_STATUSES = ("CONFIRMED", "CANCELLED", "COMPLETED")
 
 
 def search_available_vehicles(
-    start_date: date,
-    end_date: date,
+    start_date: date.date,
+    end_date: date.date,
     filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Return vehicles available throughout the requested date range.
 
     Optional filters:
+
+        seating_capacity
         brand
         model_name
         fuel_type
         transmission
-        min_seating_capacity
+        min_daily_rate
         max_daily_rate
 
     Text filters for brand and model_name use partial,
@@ -43,7 +44,7 @@ def search_available_vehicles(
     # 2. Require available vehicles and exclude overlapping
     # confirmed bookings.
     conditions = [
-        "v.status <> 'UNAVAILABLE'",
+        "v.status = 'AVAILABLE'",
         """
         NOT EXISTS (
             SELECT 1
@@ -63,11 +64,12 @@ def search_available_vehicles(
 
     # 3. Map accepted filter names to actual database columns.
     filter_conditions = {
-        "brand": ("vm.brand ILIKE %s", "text"),
-        "model_name": ("vm.model_name ILIKE %s", "text"),
-        "fuel_type": ("vm.fuel_type = %s", "upper"),
-        "transmission": ("vm.transmission = %s", "upper"),
-        "min_seating_capacity": ("vm.seats >= %s", "positive_int"),
+        "brand": ("vm.brand = ANY(%s)", "text_list"),
+        "model": ("vm.model_name = ANY(%s)", "text_list"),
+        "fuel_type": ("vm.fuel_type = ANY(%s)", "text_list"),
+        "transmission": ("vm.transmission = ANY(%s)", "text_list"),
+        "seats": ("vm.seats = ANY(%s)", "positive_int_list"),
+        "min_daily_rate": ("vm.daily_rate >= %s", "nonnegative_int"),
         "max_daily_rate": ("vm.daily_rate <= %s", "nonnegative_int"),
     }
 
@@ -75,9 +77,10 @@ def search_available_vehicles(
     for filter_name, filter_value in (filters or {}).items():
 
         if filter_name not in filter_conditions:
-            raise ValueError(
-                f"Unsupported vehicle filter: {filter_name}"
-            )
+            #raise ValueError(
+            #    f"Unsupported vehicle filter: {filter_name}"
+            #)
+            print("test")
 
         # Omitted filters have no effect.
         if filter_value is None:
@@ -88,43 +91,54 @@ def search_available_vehicles(
 
         condition, filter_type = filter_conditions[filter_name]
 
-        if filter_type in ("text", "upper"):
-            if not isinstance(filter_value, str):
+        if filter_type == "text_list":
+
+            if not isinstance(filter_value, list):
                 raise ValueError(
-                    f"Filter '{filter_name}' must be text."
+                    f"Filter '{filter_name}' must be a list."
+                )
+            
+            if not all(isinstance(x, str) for x in filter_value):
+                raise ValueError(
+                    f"Filter '{filter_name}' must have strings"
                 )
 
-            filter_value = filter_value.strip()
+            #filter_value = filter_value.strip()
 
-            if filter_type == "text":
-                filter_value = f"%{filter_value}%"
-            else:
-                filter_value = filter_value.upper()
+            #if filter_type == "text":
+            #    filter_value = f"%{filter_value}%"
+            #else:
+            #    filter_value = filter_value.upper()
 
-        elif filter_type == "positive_int":
-            if (
-                isinstance(filter_value, bool)
-                or not isinstance(filter_value, int)
-                or filter_value < 1
-            ):
+            conditions.append(condition)
+            parameters.append(filter_value)
+
+        elif filter_type == "positive_int_list":
+
+            if not isinstance(filter_value, list):
+                raise ValueError(
+                    f"Filter '{filter_name}' must be a list."
+                )
+
+            if not (all(x > 0 for x in filter_value)):
                 raise ValueError(
                     "Minimum seating capacity must be "
                     "a positive integer."
                 )
+            
+            conditions.append(condition)
+            parameters.append(filter_value)
 
         elif filter_type == "nonnegative_int":
-            if (
-                isinstance(filter_value, bool)
-                or not isinstance(filter_value, int)
-                or filter_value < 0
-            ):
+            
+            if not (isinstance(filter_value, int) and filter_value > -1 ):
                 raise ValueError(
-                    "Maximum daily rate must be "
+                    "Maximum/Minimum daily rate must be "
                     "a non-negative integer."
                 )
 
-        conditions.append(condition)
-        parameters.append(filter_value)
+            conditions.append(condition)
+            parameters.append(filter_value)            
 
     # 5. Fetch vehicles and their model details.
     query = f"""
@@ -143,7 +157,7 @@ def search_available_vehicles(
         FROM vehicle AS v
         JOIN vehicle_model AS vm
             ON vm.model_id = v.model_id
-        WHERE {" AND ".join(conditions)}
+        WHERE {' AND '.join(conditions)}
         ORDER BY
             vm.daily_rate ASC,
             vm.brand ASC,
@@ -151,13 +165,16 @@ def search_available_vehicles(
     """
 
     # 6. Execute the parameterized query.
-    with get_connection() as connection:
+    with ConnPool.connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(query, parameters)
+
+            safe_query = cast(LiteralString, query)
+
+            cursor.execute(safe_query, parameters)
             rows = cursor.fetchall()
 
             column_names = [
-                column.name for column in cursor.description
+                column.name for column in cursor.description or []
             ]
 
     # 7. Return a list of dictionaries for the UI teammate.
@@ -165,6 +182,7 @@ def search_available_vehicles(
         dict(zip(column_names, row))
         for row in rows
     ]
+
 
 def create_booking(
     customer_id: int,
@@ -319,6 +337,7 @@ def create_booking(
         "advance_amount": advance,
         "status": booking_status,
     }
+
 
 def get_customer_bookings(
     customer_id: int,
@@ -522,6 +541,7 @@ def cancel_booking(
         "status": "CANCELLED",
         "advance_paid": advance_paid,
     }
+
 
 def _clean_text_list(
     name: str,
