@@ -1,34 +1,50 @@
-
-import os
+import tomllib
+from pathlib import Path
 
 import psycopg
-from dotenv import load_dotenv
 
-# Load database settings from the project's .env file.
-load_dotenv()
+# Database login lives in app/.streamlit/secrets.toml.
+# That file is never committed. Copy secrets.toml.example and fill it in.
+SECRETS_FILE = Path(__file__).resolve().parent / ".streamlit" / "secrets.toml"
+
+
+def _load_settings():
+    """Read the [postgres] section of secrets.toml."""
+
+    if not SECRETS_FILE.exists():
+        raise RuntimeError(
+            f"Missing {SECRETS_FILE}. "
+            "Copy secrets.toml.example to secrets.toml and fill it in."
+        )
+
+    with open(SECRETS_FILE, "rb") as file:
+        settings = tomllib.load(file).get("postgres", {})
+
+    missing = [
+        name for name in ("dbname", "user", "password")
+        if not settings.get(name)
+    ]
+
+    if missing:
+        raise RuntimeError(
+            "Missing database settings in secrets.toml: "
+            + ", ".join(missing)
+        )
+
+    return settings
 
 
 def get_connection():
     """Create and return a connection to PostgreSQL."""
 
-    required_settings = ["DB_NAME", "DB_USER", "DB_PASSWORD"]
-    missing_settings = [
-        name for name in required_settings
-        if not os.getenv(name)
-    ]
-
-    if missing_settings:
-        raise RuntimeError(
-            "Missing database settings: "
-            + ", ".join(missing_settings)
-        )
+    settings = _load_settings()
 
     return psycopg.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=int(os.getenv("DB_PORT", "5432")),
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
+        host=settings.get("host", "localhost"),
+        port=int(settings.get("port", 5432)),
+        dbname=settings["dbname"],
+        user=settings["user"],
+        password=settings["password"],
         connect_timeout=5,
     )
 
