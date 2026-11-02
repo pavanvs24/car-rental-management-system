@@ -23,7 +23,7 @@ CREATE TABLE vehicle_model (
     fuel_type VARCHAR(20) NOT NULL CHECK (fuel_type IN ('PETROL','DIESEL','CNG','LPG','ELECTRIC','HYBRID')),
     transmission VARCHAR(20) NOT NULL CHECK (transmission IN ('MANUAL','AUTOMATIC')),
     seats INT NOT NULL CHECK (seats > 0),
-    daily_rate INT NOT NULL CHECK (daily_rate > 0)
+    daily_rate NUMERIC(10,2) NOT NULL CHECK (daily_rate > 0)
 );
 
 CREATE TABLE vehicle (
