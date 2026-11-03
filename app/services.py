@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date,datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
@@ -166,6 +166,7 @@ def create_booking(
         "advance_amount": advance,
         "status": booking_status,
     }
+
 
 def get_customer_bookings(
     customer_id: int,
@@ -628,3 +629,266 @@ def search_available_vehicles(
         dict(zip(column_names, row))
         for row in rows
     ]
+
+
+def confirm_pickup(booking_id, staff_id, pickup_odometer=None, pickup_date=None):
+    """Confirm a pickup: create the rental row and mark the vehicle RENTED.
+
+    Returns a dict: rental_id, booking_id, vehicle_id, registration_no,
+    staff_id, pickup_date, pickup_odometer, status, vehicle_status.
+
+    Raises ValueError for: bad input types, unknown booking, booking not
+    CONFIRMED, rental already exists, unknown staff, pickup date outside
+    start_date..end_date, vehicle UNAVAILABLE or still RENTED, odometer
+    lower than the vehicle's recorded odometer.
+    """
+    # 1. Validate inputs before touching the database
+    for name, value in (("booking_id", booking_id), ("staff_id", staff_id)):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+    if pickup_odometer is not None:
+        if (isinstance(pickup_odometer, bool) or not isinstance(pickup_odometer, int)
+                or pickup_odometer < 0):
+            raise ValueError("pickup_odometer must be a non-negative integer")
+    if pickup_date is None:
+        pickup_date = date.today()
+    elif isinstance(pickup_date, datetime) or not isinstance(pickup_date, date):
+        raise ValueError("pickup_date must be a date")
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # 2. Lock the booking row (same lock cancel_booking takes)
+            cursor.execute(
+                "SELECT vehicle_id, start_date, end_date, status "
+                "FROM booking WHERE booking_id = %s FOR UPDATE",
+                (booking_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError("Booking not found")
+            vehicle_id, start_date, end_date, status = row
+
+            # 3. Booking must be CONFIRMED
+            if status != "CONFIRMED":
+                raise ValueError(f"Booking is {status}, only CONFIRMED bookings can be picked up")
+
+            # 4. No rental may exist yet (UNIQUE constraint is the safety net)
+            cursor.execute("SELECT 1 FROM rental WHERE booking_id = %s", (booking_id,))
+            if cursor.fetchone() is not None:
+                raise ValueError("This booking has already been picked up")
+
+            # 5. Staff must exist
+            cursor.execute("SELECT 1 FROM staff WHERE staff_id = %s", (staff_id,))
+            if cursor.fetchone() is None:
+                raise ValueError("Staff member not found")
+
+            # 6. Pickup window, both ends inclusive
+            if not (start_date <= pickup_date <= end_date):
+                raise ValueError(
+                    f"Pickup date must be between {start_date} and {end_date}"
+                )
+
+            # 7. Lock the vehicle row and check its status
+            cursor.execute(
+                "SELECT registration_no, status, odometer "
+                "FROM vehicle WHERE vehicle_id = %s FOR UPDATE",
+                (vehicle_id,),
+            )
+            registration_no, vehicle_status, recorded_odometer = cursor.fetchone()
+            if vehicle_status == "UNAVAILABLE":
+                raise ValueError("Vehicle is UNAVAILABLE")
+            if vehicle_status == "RENTED":
+                raise ValueError(
+                    "Vehicle is still out on another rental; wait for its return "
+                    "or move the booking to another car"
+                )
+
+            # 8. Odometer: default to recorded value, never lower
+            if pickup_odometer is None:
+                pickup_odometer = recorded_odometer
+            elif pickup_odometer < recorded_odometer:
+                raise ValueError(
+                    f"pickup_odometer cannot be lower than the recorded odometer ({recorded_odometer})"
+                )
+
+            # 9. Create the rental row
+            cursor.execute(
+                "INSERT INTO rental (booking_id, pickup_staff_id, pickup_date, pickup_odometer) "
+                "VALUES (%s, %s, %s, %s) RETURNING rental_id, status",
+                (booking_id, staff_id, pickup_date, pickup_odometer),
+            )
+            rental_id, rental_status = cursor.fetchone()
+
+            # 10. Mark the vehicle RENTED (booking stays CONFIRMED, no payment here)
+            cursor.execute(
+                "UPDATE vehicle SET status = 'RENTED' WHERE vehicle_id = %s",
+                (vehicle_id,),
+            )
+
+    return {
+        "rental_id": rental_id,
+        "booking_id": booking_id,
+        "vehicle_id": vehicle_id,
+        "registration_no": registration_no,
+        "staff_id": staff_id,
+        "pickup_date": pickup_date,
+        "pickup_odometer": pickup_odometer,
+        "status": rental_status,
+        "vehicle_status": "RENTED",
+    }
+
+def process_return(registration_no, staff_id, return_odometer, return_date=None, other_charge=0):
+    """Process a return: close the rental, bill the final amount, free the car.
+
+    Returns a dict: rental_id, booking_id, vehicle_id, registration_no,
+    return_date, return_odometer, distance, days_booked, late_days,
+    base_amount, late_charge, other_charge, advance_paid, final_amount,
+    final_payment_id (None when no row written), refund_due.
+
+    Raises ValueError for: bad input types, no ACTIVE rental for the
+    registration number, unknown staff, return_date before pickup_date,
+    return_odometer not above pickup_odometer, negative or invalid other_charge.
+    """
+    # 1. Validate inputs before touching the database
+    if not isinstance(registration_no, str) or not registration_no.strip():
+        raise ValueError("registration_no must be non-blank text")
+    registration_no = registration_no.strip()
+    if isinstance(staff_id, bool) or not isinstance(staff_id, int) or staff_id <= 0:
+        raise ValueError("staff_id must be a positive integer")
+    if (isinstance(return_odometer, bool) or not isinstance(return_odometer, int)
+            or return_odometer < 0):
+        raise ValueError("return_odometer must be a non-negative integer")
+    if return_date is None:
+        return_date = date.today()
+    elif isinstance(return_date, datetime) or not isinstance(return_date, date):
+        raise ValueError("return_date must be a date")
+    if isinstance(other_charge, bool):
+        raise ValueError("other_charge must be a number")
+    try:
+        other_charge = Decimal(str(other_charge))
+    except InvalidOperation:
+        raise ValueError("other_charge must be a number")
+    if not other_charge.is_finite() or other_charge < 0:
+        raise ValueError("other_charge must be a finite amount, zero or more")
+    cent = Decimal("0.01")
+    other_charge = other_charge.quantize(cent, rounding=ROUND_HALF_UP)
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # 2. Find the ACTIVE rental for this registration number (plain read)
+            cursor.execute(
+                "SELECT r.rental_id, r.booking_id, b.vehicle_id "
+                "FROM rental r "
+                "JOIN booking b ON b.booking_id = r.booking_id "
+                "JOIN vehicle v ON v.vehicle_id = b.vehicle_id "
+                "JOIN vehicle_model m ON m.model_id = v.model_id "
+                "WHERE v.registration_no = %s AND r.status = 'ACTIVE'",
+                (registration_no,),
+            )
+            found = cursor.fetchone()
+            if found is None:
+                raise ValueError("No active rental for this vehicle")
+            rental_id, booking_id, vehicle_id = found
+
+            # 3. Lock booking, then rental, then vehicle; re-check ACTIVE
+            cursor.execute(
+                "SELECT start_date, end_date FROM booking "
+                "WHERE booking_id = %s FOR UPDATE",
+                (booking_id,),
+            )
+            start_date, end_date = cursor.fetchone()
+            cursor.execute(
+                "SELECT pickup_date, pickup_odometer, status FROM rental "
+                "WHERE rental_id = %s FOR UPDATE",
+                (rental_id,),
+            )
+            pickup_date, pickup_odometer, rental_status = cursor.fetchone()
+            if rental_status != "ACTIVE":
+                raise ValueError("No active rental for this vehicle")
+            cursor.execute(
+                "SELECT m.daily_rate FROM vehicle v "
+                "JOIN vehicle_model m ON m.model_id = v.model_id "
+                "WHERE v.vehicle_id = %s FOR UPDATE OF v",
+                (vehicle_id,),
+            )
+            daily_rate = Decimal(str(cursor.fetchone()[0]))
+
+            # 4. Staff must exist
+            cursor.execute("SELECT 1 FROM staff WHERE staff_id = %s", (staff_id,))
+            if cursor.fetchone() is None:
+                raise ValueError("Staff member not found")
+
+            # 5. Date and odometer sanity (clear messages before the CHECK fires)
+            if return_date < pickup_date:
+                raise ValueError(f"return_date cannot be before pickup date ({pickup_date})")
+            if return_odometer <= pickup_odometer:
+                raise ValueError(
+                    f"return_odometer must be above the pickup reading ({pickup_odometer})"
+                )
+
+            # 6. Money (all Decimal, 2 places)
+            days_booked = (end_date - start_date).days + 1
+            base_amount = (daily_rate * days_booked).quantize(cent, rounding=ROUND_HALF_UP)
+            late_days = max((return_date - end_date).days, 0)
+            late_charge = (daily_rate * late_days).quantize(cent, rounding=ROUND_HALF_UP)
+            cursor.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM payment "
+                "WHERE booking_id = %s AND transaction_type = 'ADVANCE'",
+                (booking_id,),
+            )
+            advance_paid = Decimal(str(cursor.fetchone()[0])).quantize(cent, rounding=ROUND_HALF_UP)
+            final_amount = (base_amount + late_charge + other_charge - advance_paid).quantize(
+                cent, rounding=ROUND_HALF_UP
+            )
+
+            # 7. Close the rental
+            cursor.execute(
+                "UPDATE rental SET return_staff_id = %s, return_date = %s, "
+                "return_odometer = %s, late_charge = %s, other_charge = %s, "
+                "status = 'COMPLETED' WHERE rental_id = %s",
+                (staff_id, return_date, return_odometer, late_charge, other_charge, rental_id),
+            )
+
+            # 8. FINAL payment only if something is owed (amount must be > 0)
+            final_payment_id = None
+            if final_amount > 0:
+                cursor.execute(
+                    "INSERT INTO payment (booking_id, rental_id, transaction_type, amount) "
+                    "VALUES (%s, %s, 'FINAL', %s) RETURNING transaction_id",
+                    (booking_id, rental_id, final_amount),
+                )
+                final_payment_id = cursor.fetchone()[0]
+                refund_due = Decimal("0.00")
+            else:
+                refund_due = (-final_amount).quantize(cent, rounding=ROUND_HALF_UP)
+
+            # 9. Free the vehicle and record the new odometer
+            cursor.execute(
+                "UPDATE vehicle SET status = 'AVAILABLE', odometer = %s WHERE vehicle_id = %s",
+                (return_odometer, vehicle_id),
+            )
+
+            # 10. Complete the booking
+            cursor.execute(
+                "UPDATE booking SET status = 'COMPLETED' WHERE booking_id = %s",
+                (booking_id,),
+            )
+
+    return {
+        "rental_id": rental_id,
+        "booking_id": booking_id,
+        "vehicle_id": vehicle_id,
+        "registration_no": registration_no,
+        "return_date": return_date,
+        "return_odometer": return_odometer,
+        "distance": return_odometer - pickup_odometer,
+        "days_booked": days_booked,
+        "late_days": late_days,
+        "base_amount": base_amount,
+        "late_charge": late_charge,
+        "other_charge": other_charge,
+        "advance_paid": advance_paid,
+        "final_amount": final_amount,
+        "final_payment_id": final_payment_id,
+        "refund_due": refund_due,
+    }
