@@ -402,6 +402,10 @@ def add_vehicle_model(brand, model_name, fuel_type, transmission, seats, daily_r
 
 
 def add_vehicle(model_id, registration_no, odometer=0, status='AVAILABLE'):
+    """
+        Returns the row inserted as a dict.
+        Raises ValueError for invalid inputs.
+    """
     _require_id(model_id, "model_id")
 
     if not isinstance(registration_no, str) or not registration_no.strip():
@@ -432,3 +436,70 @@ def add_vehicle(model_id, registration_no, odometer=0, status='AVAILABLE'):
                 raise ValueError("Vehicle model not found.")
 
             return _rows_to_dicts(cursor)[0]
+
+
+def set_vehicle_status(vehicle_id, new_status):
+    """
+        Returns a dict with vehicle_id, old_status, new_status, affected_bookings.
+        affected_bookings is a list of dicts with booking_id, customer_id, start_date, end_date
+        of future CONFIRMED boookings of the vehicle for reassigning by staff.
+        (only when new_status is UNAVAILABLE) or else an empty list.
+    """
+    _require_id(vehicle_id, "vehicle_id")
+
+    if not isinstance(new_status, str) or new_status.strip().upper() not in ('AVAILABLE','UNAVAILABLE'):
+        raise ValueError("Invalid vehicle status.")
+    new_status = new_status.strip().upper()
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT status FROM vehicle WHERE vehicle_id = %s FOR UPDATE;",
+                (vehicle_id,)    
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError("Vehicle not found.")
+            old_status = row[0]
+        
+            cursor.execute("""
+                SELECT 1 FROM rental r JOIN booking b
+                ON r.booking_id = b.booking_id
+                WHERE b.vehicle_id = %s
+                AND r.rental = 'ACTIVE'
+                LIMIT 1;""",
+                (vehicle_id,)
+            )
+            if cursor.fetchone() is not None:
+                raise ValueError("Vehicle has an active rental.")
+
+            query = """
+                UPDATE vehicle
+                SET status = %s
+                WHERE vehicle_id = %s
+            """
+
+            cursor.execute(query, (new_status, vehicle_id))
+
+            result = {"vehicle_id": vehicle_id, "old_status": old_status, "new_status": new_status}
+
+            if new_status == "AVAILABLE":
+                result["affected_bookings"] = []
+                return result
+
+            booking_query = """
+                SELECT 
+                    booking_id,
+                    customer_id,
+                    start_date,
+                    end_date
+                FROM booking
+                WHERE vehicle_id = %s
+                AND end_date >= CURRENT_DATE
+                AND status = 'CONFIRMED'
+                ORDER BY start_date;
+            """
+            cursor.execute(booking_query, (vehicle_id,))
+            result["affected_bookings"] = _rows_to_dicts(cursor)
+            return result
+            
