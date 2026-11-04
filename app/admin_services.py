@@ -1,5 +1,6 @@
 from app.db import get_connection
 from datetime import date
+from decimal import Decimal
 
 BOOKING_STATUSES = ('CONFIRMED', 'CANCELLED', 'COMPLETED')
 
@@ -241,3 +242,114 @@ def list_bookings(filters=None, limit=100, offset=0):
         with connection.cursor() as cursor:
             cursor.execute(query, parameters)
             return _rows_to_dicts(cursor)
+
+
+def get_booking_details(booking_id, customer_id=None):
+    """
+        Returns everything about one booking as dict.
+        customer_id is optional, when given it means
+            "only if the customer owns this booking"
+        Raises ValueError when not found.
+    """
+
+    _require_id(booking_id, "booking_id")
+    conditions = ["b.booking_id = %s"]
+    parameters = [booking_id]
+
+    if customer_id is not None:
+        _require_id(customer_id, "customer_id")
+        conditions.append("b.customer_id = %s")
+        parameters.append(customer_id)
+
+    where = " AND ".join(conditions)
+
+    main_query = f"""
+        SELECT
+            b.booking_id,
+            b.booking_date,
+            b.start_date,
+            b.end_date,
+            (b.end_date - b.start_date + 1) AS days,
+            b.status,
+            v.vehicle_id,
+            v.registration_no,
+            vm.brand,
+            vm.model_name,
+            vm.daily_rate
+        FROM booking b
+        JOIN vehicle v
+        ON b.vehicle_id = v.vehicle_id
+        JOIN vehicle_model vm
+        ON v.model_id = vm.model_id
+        WHERE {where}
+    """
+
+    customer_query = """
+        SELECT
+            customer_id,
+            full_name,
+            email,
+            phone
+        FROM customer
+        WHERE customer_id = (
+            SELECT customer_id
+            FROM booking
+            WHERE booking_id = %s
+        )
+    """
+
+    payment_query = """
+        SELECT
+            transaction_id,
+            transaction_type,
+            amount,
+            paid_at,
+            rental_id
+        FROM payment
+        WHERE booking_id = %s
+        ORDER BY paid_at, transaction_id;
+    """
+
+    rental_query = """
+        SELECT 
+            rental_id,
+            pickup_staff_id,
+            return_staff_id,
+            pickup_date,
+            pickup_odometer,
+            return_date,
+            return_odometer,
+            late_charge,
+            other_charge,
+            status
+        FROM rental
+        WHERE booking_id = %s;
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(main_query, parameters)
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError("Booking not found.")
+            column_names = [column.name for column in cursor.description]
+            result = dict(zip(column_names, row))
+
+            cursor.execute(customer_query, (booking_id,))
+            result["customer"] = _rows_to_dicts(cursor)[0]
+
+            cursor.execute(payment_query, (booking_id,))
+            result["payments"] = _rows_to_dicts(cursor)
+
+            cursor.execute(rental_query, (booking_id,))
+            row = cursor.fetchone()
+            if row is None:
+                result["rental"] = None
+            else:
+                column_names = [column.name for column in cursor.description]
+                result["rental"] = dict(zip(column_names, row))
+
+    result["total_amount"] = result["daily_rate"] * result["days"]
+    result["total_paid"] = sum((p["amount"] for p in result["payments"]), Decimal("0"))
+    return result
+
