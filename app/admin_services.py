@@ -1,8 +1,10 @@
 from app.db import get_connection
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 BOOKING_STATUSES = ('CONFIRMED', 'CANCELLED', 'COMPLETED')
+FUEL_TYPES = ('PETROL','DIESEL','CNG','LPG','ELECTRIC','HYBRID')
+TRANSMISSIONS = ('MANUAL','AUTOMATIC')
 
 
 def _rows_to_dicts(cursor):
@@ -352,4 +354,44 @@ def get_booking_details(booking_id, customer_id=None):
     result["total_amount"] = result["daily_rate"] * result["days"]
     result["total_paid"] = sum((p["amount"] for p in result["payments"]), Decimal("0"))
     return result
+
+
+def add_vehicle_model(brand, model_name, fuel_type, transmission, seats, daily_rate):
+    if not isinstance(brand, str) or not brand.strip():
+        raise ValueError("Invalid brand.")
+    if not isinstance(model_name, str) or not model_name.strip():
+        raise ValueError("Invalid model_name.")
+    if not isinstance(fuel_type, str) or fuel_type.strip().upper() not in FUEL_TYPES:
+        raise ValueError("Invalid fuel_type.")
+    if not isinstance(transmission, str) or transmission.strip().upper() not in TRANSMISSIONS:
+        raise ValueError("Invalid transmission.")
+
+    _require_id(seats, "seats")
+
+    try:
+        daily_rate = Decimal(str(daily_rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ValueError("Invalid daily_rate.")
+
+    if not daily_rate.is_finite() or daily_rate <= 0:
+        raise ValueError("The daily_rate must be positive.")
+
+    brand, model_name = brand.strip(), model_name.strip()
+    fuel_type, transmission = fuel_type.strip().upper(), transmission.strip().upper()
+
+    query = """
+        INSERT INTO vehicle_model
+        ("brand", "model_name", "fuel_type", "transmission", "seats", "daily_rate")
+        VALUES
+        (%s, %s, %s, %s, %s, %s)
+        RETURNING *;
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                query, 
+                (brand, model_name, fuel_type, transmission, seats, daily_rate)
+            )
+            return _rows_to_dicts(cursor)[0]
 
