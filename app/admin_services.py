@@ -502,4 +502,117 @@ def set_vehicle_status(vehicle_id, new_status):
             cursor.execute(booking_query, (vehicle_id,))
             result["affected_bookings"] = _rows_to_dicts(cursor)
             return result
-            
+
+
+def reassign_booking_vehicle(booking_id, new_vehicle_id=None):
+    """
+        Return a dict of booking_id, old_vehicle_id, new_vehicle_id
+        Auto reassign works only for same vehicle model
+        Manual reassign works for different model and upgrades.
+    """
+    # Validation
+    _require_id(booking_id, "booking_id")
+
+    if new_vehicle_id is not None:
+        _require_id(new_vehicle_id, "new_vehicle_id")
+
+    lock_booking_query = """
+        SELECT vehicle_id, status, start_date, end_date
+        FROM booking WHERE booking_id = %s
+        FOR UPDATE;
+    """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            # Finding booking & locking
+            cursor.execute(lock_booking_query, (booking_id,))
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError("Booking not found.")
+
+            # Storing Booking details in result as dict
+            column_names = [column.name for column in cursor.description]
+            result = dict(zip(column_names, row))
+            if result["status"] != "CONFIRMED":
+                raise ValueError("Booking is not confirmed.")
+
+            # Checking if booking has rental.
+            cursor.execute("""
+                SELECT 1 FROM rental WHERE booking_id = %s 
+                LIMIT 1""", 
+                (booking_id,)
+            )
+            if cursor.fetchone() is not None:
+                raise ValueError("Booking already has a rental.")
+
+            # Auto reassigning - finding new_vehicle_id.
+            if new_vehicle_id is None:
+                cursor.execute("""
+                    SELECT model_id FROM vehicle
+                    WHERE vehicle_id = %s""",
+                    (result["vehicle_id"],)
+                )
+                model_id = cursor.fetchone()[0]
+                candidate_query = """
+                    SELECT vehicle_id
+                    FROM vehicle v
+                    WHERE v.model_id = %s
+                        AND v.vehicle_id <> %s
+                        AND v.status <> 'UNAVAILABLE'
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM booking x
+                            WHERE x.vehicle_id = v.vehicle_id
+                                AND x.status = 'CONFIRMED'
+                                AND x.start_date <= %s
+                                AND x.end_date >= %s
+                        )
+                    ORDER BY v.vehicle_id;
+                """
+                cursor.execute(
+                    candidate_query,
+                    (model_id, result["vehicle_id"], result["end_date"], result["start_date"])
+                )
+                candidates = [r[0] for r in cursor.fetchall()]
+                if not candidates:
+                    raise ValueError("No other vehicle of the same model is free for these dates.")
+                new_vehicle_id = candidates[0]
+
+            # Reassigning.
+            if new_vehicle_id == result["vehicle_id"]:
+                raise ValueError("Cannot reassign to same vehicle.")
+
+            cursor.execute("""
+                SELECT status FROM vehicle
+                WHERE vehicle_id = %s
+                FOR UPDATE""",
+                (new_vehicle_id,)
+            )
+            new_vehicle_row = cursor.fetchone()
+            if new_vehicle_row is None:
+                raise ValueError("Vehicle not found.")
+            if new_vehicle_row[0] == 'UNAVAILABLE':
+                raise ValueError("Vehicle is not available.")
+
+            cursor.execute("""
+                SELECT 1 FROM booking
+                WHERE vehicle_id = %s
+                    AND status = 'CONFIRMED'
+                    AND start_date <= %s
+                    AND end_date >= %s
+                LIMIT 1""",
+                (new_vehicle_id, result["end_date"], result["start_date"])
+            )
+            if cursor.fetchone() is not None:
+                raise ValueError("Vehicle has another confirmed booking in these dates.")
+
+            cursor.execute("""
+                UPDATE booking
+                SET vehicle_id = %s
+                WHERE booking_id = %s""",
+                (new_vehicle_id, booking_id)
+            )
+            return {
+                "booking_id": booking_id,
+                "old_vehicle_id": result["vehicle_id"],
+                "new_vehicle_id": new_vehicle_id
+            }
