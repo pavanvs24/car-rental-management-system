@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from psycopg.errors import UniqueViolation, ForeignKeyViolation
 
+VEHICLE_STATUSES = ('AVAILABLE','UNAVAILABLE','RENTED')
 BOOKING_STATUSES = ('CONFIRMED', 'CANCELLED', 'COMPLETED')
 FUEL_TYPES = ('PETROL','DIESEL','CNG','LPG','ELECTRIC','HYBRID')
 TRANSMISSIONS = ('MANUAL','AUTOMATIC')
@@ -22,6 +23,37 @@ def _require_id(value, name):
         or value < 1
     ):
         raise ValueError(f"{name} must be a positive integer.")
+
+
+def _normalize_choice(status_filter, status_name, allowed_statuses):
+    if not isinstance(status_filter, str) and not isinstance(status_filter, list):
+        raise ValueError(f"The {status_name} should be a list or string.")
+
+    if isinstance(status_filter, str):
+        if status_filter.strip():
+            statuses = [status_filter]
+        else:
+            raise ValueError(f"Invalid {status_name} value.")
+    else:
+        statuses = [status for status in status_filter]
+
+    for i, status in enumerate(statuses):
+        if not isinstance(status, str) or status.strip().upper() not in allowed_statuses:
+            raise ValueError(f"Invalid {status_name} value.")
+        statuses[i] = status.strip().upper()
+
+    return statuses
+
+
+def _money_validator(value, value_name):
+    try:
+        value = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ValueError(f"Invalid {value_name}.")
+
+    if not value.is_finite() or value <= 0:
+        raise ValueError(f"The {value_name} must be positive.")
+    return value
 
 
 def list_active_rentals():
@@ -146,24 +178,7 @@ def list_bookings(filters=None, limit=100, offset=0):
     parameters = []
 
     if filters.get("status") is not None:
-        status_filter = filters["status"]
-
-        if not isinstance(status_filter, str) and not isinstance(status_filter, list):
-            raise ValueError("Status should be a list or string.")
-        
-        if isinstance(status_filter, str):
-            if status_filter.strip():
-                statuses = [status_filter]
-            else:
-                raise ValueError("Invalid status value.")
-        else:
-            statuses = [status for status in status_filter]
-
-        for i, status in enumerate(statuses):
-            if not isinstance(status, str) or status.strip().upper() not in BOOKING_STATUSES:
-                raise ValueError("Invalid status value.")
-            statuses[i] = status.strip().upper()
-
+        statuses = _normalize_choice(filters["status"], "status", BOOKING_STATUSES)
         if statuses:
             conditions.append("b.status = ANY(%s)")
             parameters.append(statuses)
@@ -373,13 +388,7 @@ def add_vehicle_model(brand, model_name, fuel_type, transmission, seats, daily_r
 
     _require_id(seats, "seats")
 
-    try:
-        daily_rate = Decimal(str(daily_rate)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    except InvalidOperation:
-        raise ValueError("Invalid daily_rate.")
-
-    if not daily_rate.is_finite() or daily_rate <= 0:
-        raise ValueError("The daily_rate must be positive.")
+    daily_rate = _money_validator(daily_rate, "daily_rate")
 
     brand, model_name = brand.strip(), model_name.strip()
     fuel_type, transmission = fuel_type.strip().upper(), transmission.strip().upper()
@@ -466,7 +475,7 @@ def set_vehicle_status(vehicle_id, new_status):
                 SELECT 1 FROM rental r JOIN booking b
                 ON r.booking_id = b.booking_id
                 WHERE b.vehicle_id = %s
-                AND r.rental = 'ACTIVE'
+                AND r.status = 'ACTIVE'
                 LIMIT 1;""",
                 (vehicle_id,)
             )
@@ -616,3 +625,140 @@ def reassign_booking_vehicle(booking_id, new_vehicle_id=None):
                 "old_vehicle_id": result["vehicle_id"],
                 "new_vehicle_id": new_vehicle_id
             }
+
+
+def list_vehicles(filters=None, limit=100, offset=0):
+    """
+        Filters -> status, model_id, registration_no, brand, model_name,
+            fuel_type, transmission, min_seats, min_daily_rate, max_daily_rate.
+            unknown filter will raise ValueError.
+        status, fuel_type and transmission take a string or a list of strings.
+        registration_no, brand and model_name are partial, case-insensitive matches.
+        min_daily_rate and max_daily_rate are inclusive bounds.
+        Returns a list of dicts with keys
+            vehicle_id, registration_no, status, odometer, model_id,
+            brand, model_name, fuel_type, transmission, seats, daily_rate.
+        Ordered by vehicle_id. limit is 1 to 500, offset is 0 or more.
+    """
+    filters = filters or {}
+
+    allowed = [
+        "status", "model_id", "registration_no", "brand", "model_name", 
+        "fuel_type", "transmission", "min_seats", "min_daily_rate", "max_daily_rate"
+    ]
+    unknown = [key for key in filters if key not in allowed]
+    if unknown:
+        raise ValueError("Unsupported vehicle filter: " + ", ".join(unknown))
+
+    conditions = []
+    parameters = []
+
+    if filters.get("status") is not None:
+        statuses = _normalize_choice(filters["status"], "status", VEHICLE_STATUSES)
+        if statuses:
+            conditions.append("v.status = ANY(%s)")
+            parameters.append(statuses)        
+
+    if filters.get("model_id") is not None:
+        _require_id(filters["model_id"], "model_id")
+        conditions.append("v.model_id = %s")
+        parameters.append(filters["model_id"])
+
+    if filters.get("registration_no") is not None:
+        reg_no = filters["registration_no"]
+        if not isinstance(reg_no, str) or not reg_no.strip():
+            raise ValueError("Invalid registration_no.")
+        conditions.append("v.registration_no ILIKE  %s")
+        parameters.append(f"%{reg_no.strip()}%")
+
+    if filters.get("brand") is not None:
+        brand_filter = filters["brand"]
+        if not isinstance(brand_filter, str) or not brand_filter.strip():
+            raise ValueError("Invalid brand name.")
+        conditions.append("vm.brand ILIKE %s")
+        parameters.append(f"%{brand_filter.strip()}%")
+
+    if filters.get("model_name") is not None:
+        model_name_filter = filters["model_name"]
+        if not isinstance(model_name_filter, str) or not model_name_filter.strip():
+            raise ValueError("Invalid model name.")
+        conditions.append("vm.model_name ILIKE %s")
+        parameters.append(f"%{model_name_filter.strip()}%")
+
+    if filters.get("fuel_type") is not None:
+        fuels = _normalize_choice(filters["fuel_type"], "fuel type", FUEL_TYPES)
+        if fuels:
+            conditions.append("vm.fuel_type = ANY(%s)")
+            parameters.append(fuels)
+
+    if filters.get("transmission") is not None:
+        transmissions = _normalize_choice(filters["transmission"], "transmission", TRANSMISSIONS)
+        if transmissions:
+            conditions.append("vm.transmission = ANY(%s)")
+            parameters.append(transmissions)
+
+    if filters.get("min_seats") is not None:
+        _require_id(filters["min_seats"], "min_seats")
+        conditions.append("vm.seats >= %s")
+        parameters.append(filters["min_seats"])
+
+    if filters.get("min_daily_rate") is not None:
+        min_daily_rate = _money_validator(filters["min_daily_rate"], "min_daily_rate")
+        conditions.append("vm.daily_rate >= %s")
+        parameters.append(min_daily_rate)
+
+    if filters.get("max_daily_rate") is not None:
+        max_daily_rate = _money_validator(filters["max_daily_rate"], "max_daily_rate")
+        conditions.append("vm.daily_rate <= %s")
+        parameters.append(max_daily_rate)
+
+    if (
+        filters.get("min_daily_rate") is not None
+        and filters.get("max_daily_rate") is not None 
+        and max_daily_rate < min_daily_rate
+    ):
+        raise ValueError("The max_daily_rate cannot be lower than min_daily_rate.")
+
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int) 
+        or limit < 1 or limit > 500 
+    ):
+        raise ValueError("The limit should be an integer between 1 and 500.")
+
+    if (
+        isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+    ):
+        raise ValueError("The offset should be at least 0.")
+
+    where = " AND ".join(conditions) if conditions else "TRUE"
+    parameters.extend([limit, offset])
+
+    query = f"""
+        SELECT
+            v.vehicle_id,
+            v.registration_no,
+            v.status,
+            v.odometer,
+            vm.model_id,
+            vm.brand,
+            vm.model_name,
+            vm.fuel_type,
+            vm.transmission,
+            vm.seats,
+            vm.daily_rate
+        FROM vehicle v
+        JOIN vehicle_model vm
+        ON vm.model_id = v.model_id
+        WHERE {where}
+        ORDER BY v.vehicle_id
+        LIMIT %s OFFSET %s;
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, parameters)
+            return _rows_to_dicts(cursor)
+    
