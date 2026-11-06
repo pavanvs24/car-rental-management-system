@@ -1,9 +1,10 @@
 from typing import Any
 import services as ss
+import ui_helpers as uh
 import streamlit as st
 import datetime as dt
 
-#==============Page Layout=================
+#==============Page Config=================
 
 st.set_page_config(
 
@@ -32,8 +33,8 @@ st.html(
         }
 
         div[data-testid="stMainBlockContainer"] {
-            padding-left: 0.5rem;
-            padding-right: 0.5rem;
+            padding-left: 0.2rem;
+            padding-right: 0.2rem;
             padding-top: 1rem; 
         }
     </style>
@@ -42,7 +43,7 @@ st.html(
 
 #==============Data Init==================
 
-FILTER_OPTIONS = ss.Get_Filter_Options()
+FILTER_OPTIONS = uh.Get_Filter_Options()
 min_price = FILTER_OPTIONS["min_rate"][0] if FILTER_OPTIONS.get("min_rate") else 0
 max_price = FILTER_OPTIONS["max_rate"][0] if FILTER_OPTIONS.get("max_rate") else 10000
 
@@ -76,7 +77,7 @@ if "first_time" not in st.session_state:
 def ClearAndLogOut():
 
     st.session_state.clear()
-    st.switch_page("pages/1_UserLogin.py")
+    st.switch_page("streamlit_app.py")
 
 def ChangeToAll(select):
 
@@ -152,10 +153,9 @@ def UpdateCurrentPage(dir):
 
 def BookCar(vehicle):
 
-
+    st.session_state["f_dates"] = [st.session_state["dates"][0], st.session_state["dates"][1]]
+    st.session_state["selected_vehicle"] = vehicle
     st.switch_page("pages/7_UserBooking.py")
-
-    pass
 
 #initialise data for first time
 if st.session_state["first_time"]:
@@ -168,19 +168,6 @@ if st.session_state["first_time"]:
 if "auth" not in st.session_state or st.session_state.auth == False:
 
     ClearAndLogOut()
-
-empty, logout, rerun = st.columns([11,1,1], gap = "small", vertical_alignment = 'top', width = 'stretch')
-
-with logout:
-
-    if st.button("Log :red[Out]", key="LogOut"):
-        ClearAndLogOut()
-
-with rerun:
-
-    #dev only, disable when commit
-    if st.button("Re :green[Run]", key = 'rerun'):
-        st.rerun()
 
 #==========================================
 
@@ -344,7 +331,7 @@ with col_filters:
             col1.multiselect(
 
                 "Models:",
-                options = ss.get_models(st.session_state["brand"]),
+                options = uh.get_models(st.session_state["brand"]),
                 key = "model",
 
             )
@@ -400,21 +387,36 @@ if index == 1:
 
     st.session_state["left_disabled"] = True
 
-
 with col_main:
 
-    st.title(
+    col_title, col_settings = st.columns([15,1], vertical_alignment = 'center')
 
-    ":red[Car] Selection",
-    text_alignment = 'center'
+    with col_title:
 
-    )
+        st.title(
 
+        ":red[Car] Selection",
+        text_alignment = 'center'
+
+        ) 
+
+    with col_settings:
+
+        with st.popover("", icon=":material/settings:", key="settings", width = 'content'):
+            
+            if st.button(":green[Profile]", width="stretch"):
+
+                st.switch_page("pages/8_UserProfile.py")
+                
+            if st.button(":red[Log] Out", width="stretch"):
+
+                ClearAndLogOut()
+                
     st.divider()
 
     for idx, vehicle in enumerate(st.session_state["vehicle_list"][16*(index-1):(16*index)]):
     
-        if idx % 4 == 0:
+        if idx % 3 == 0:
 
             cols = st.columns(3)
 
@@ -423,9 +425,9 @@ with col_main:
         with col:
             
             with st.container(border=True):
-
-                st.markdown(f"### {16*(index-1) + idx + 1}) {vehicle["brand"]} {vehicle["model_name"]}", text_alignment = 'center')
-                st.markdown(f"<h5 style='text-align: center; color: #FF5555; margin: 0.5;'> {vehicle["registration_no"]} </h5>", unsafe_allow_html = True)
+                
+                st.markdown(f"### {16*(index-1) + idx + 1}) {vehicle["brand"]} {vehicle["model_name"]}", text_alignment = 'left')
+                st.html(f"<h4 style='text-align: left; color: #FF5555; margin: 0.5;'> {vehicle["registration_no"]} </h4>")
 
                 st.divider()
 

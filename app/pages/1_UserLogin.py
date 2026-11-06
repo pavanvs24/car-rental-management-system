@@ -1,4 +1,4 @@
-from services import GetPassHash
+from ui_helpers import GetPassHash
 import streamlit as st
 import bcrypt as bt
 import time as te
