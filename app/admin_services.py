@@ -798,3 +798,27 @@ def delete_vehicle(vehicle_id):
                 (vehicle_id,)
             )
             return {"vehicle_id": vehicle_id}
+
+
+def list_vehicle_models():
+    """
+        Return a list of dicts with keys model_id, brand, model_name,
+        fuel_type, transmission, seats, daily_rate, ordered by brand, model_name.
+    """
+    query = """
+        SELECT
+            model_id,
+            brand,
+            model_name,
+            fuel_type,
+            transmission,
+            seats,
+            daily_rate
+        FROM vehicle_model
+        ORDER BY brand, model_name;
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            return _rows_to_dicts(cursor)
