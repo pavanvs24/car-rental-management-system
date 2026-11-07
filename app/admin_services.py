@@ -761,4 +761,40 @@ def list_vehicles(filters=None, limit=100, offset=0):
         with connection.cursor() as cursor:
             cursor.execute(query, parameters)
             return _rows_to_dicts(cursor)
-    
+
+
+def delete_vehicle(vehicle_id):
+    """
+        Return dict with only vehicle_id.
+        A vehicle with booking history cannot be deleted and will raise ValueError.
+    """
+    _require_id(vehicle_id, "vehicle_id")
+
+    query = """
+        SELECT 1 FROM vehicle
+        WHERE vehicle_id = %s
+        FOR UPDATE;
+    """
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query, (vehicle_id,))
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError("Vehicle not found.")
+
+            cursor.execute("""
+                SELECT 1 FROM booking
+                WHERE vehicle_id = %s
+                LIMIT 1;""",
+                (vehicle_id,)
+            )            
+            if cursor.fetchone() is not None:
+                raise ValueError("Vehicle has booking history. Mark it unavailable instead.")
+
+            cursor.execute("""
+                DELETE FROM vehicle
+                WHERE vehicle_id = %s""",
+                (vehicle_id,)
+            )
+            return {"vehicle_id": vehicle_id}
