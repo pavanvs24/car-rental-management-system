@@ -424,16 +424,18 @@ with col_filters:
 
     st.divider()
 
-    if st.button(
+    if st.session_state["auth"] == "Guest":
 
-        "Back",
-        icon = ":material/arrow_back:",
-        type = 'primary',
-        width = 'stretch'
+        if st.button(
 
-    ):
-        st.session_state["auth"] = "No_Auth"
-        st.rerun()
+            "Back",
+            icon = ":material/arrow_back:",
+            type = 'primary',
+            width = 'stretch'
+
+        ):
+            st.session_state["auth"] = "No_Auth"
+            st.rerun()
 
 #================Col CAR VIEW=================
 
