@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date,datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
@@ -167,6 +167,7 @@ def create_booking(
         "status": booking_status,
     }
 
+
 def get_customer_bookings(
     customer_id: int,
     status: str | None = None,
@@ -253,6 +254,7 @@ def get_customer_bookings(
 
     # 4. Return a list of dictionaries for the UI teammate.
     return [dict(zip(column_names, row)) for row in rows]
+
 
 def cancel_booking(
     booking_id: int,
@@ -413,6 +415,7 @@ def _clean_text_list(
 
     return cleaned or None
 
+
 def _clean_seat_list(value: Any) -> list[int] | None:
     """Same idea as _clean_text_list, for a list of seat counts."""
 
@@ -453,6 +456,7 @@ def _clean_seat_list(value: Any) -> list[int] | None:
 
     return cleaned or None
 
+
 def _clean_rate(name: str, value: Any) -> Decimal | None:
     """Validate a daily-rate limit. None or blank text means 'no limit'."""
 
@@ -474,6 +478,7 @@ def _clean_rate(name: str, value: Any) -> Decimal | None:
         raise ValueError(f"Filter '{name}' must be a non-negative number.")
 
     return number
+
 
 def search_available_vehicles(
     start_date: date,

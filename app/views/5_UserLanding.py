@@ -1,33 +1,25 @@
-from typing import Any
-import services as ss
-import ui_helpers as uh
 import streamlit as st
 import datetime as dt
+import services as ss
+import ui_helpers as uh
+from typing import Any
 
 #==============Page Config=================
 
 st.set_page_config(
 
-    "Selection",
     layout = 'wide',
-    initial_sidebar_state = 'collapsed'
 
 )
 
 st.html(
     """
     <style>
+
         [data-testid="stVerticalBlock"] {
             gap: 0.5rem;
         }
-    </style>
-    """
-)
 
-st.html(
-    """
-    <style>
-        /* Hide default header bar strip entirely */
         header[data-testid="stHeader"] {
             display: none !important;
         }
@@ -35,7 +27,8 @@ st.html(
         div[data-testid="stMainBlockContainer"] {
             padding-left: 0.2rem;
             padding-right: 0.2rem;
-            padding-top: 1rem; 
+            padding-top: 1rem;
+            padding-bottom: 1rem;
         }
     </style>
     """
@@ -43,7 +36,7 @@ st.html(
 
 #==============Data Init==================
 
-FILTER_OPTIONS = uh.Get_Filter_Options()
+FILTER_OPTIONS = uh.GetFilterOptions()
 min_price = FILTER_OPTIONS["min_rate"][0] if FILTER_OPTIONS.get("min_rate") else 0
 max_price = FILTER_OPTIONS["max_rate"][0] if FILTER_OPTIONS.get("max_rate") else 10000
 
@@ -74,11 +67,6 @@ if "first_time" not in st.session_state:
 
 #================Functions================
 
-def ClearAndLogOut():
-
-    st.session_state.clear()
-    st.switch_page("streamlit_app.py")
-
 def ChangeToAll(select):
 
     if "All" in st.session_state[select]:
@@ -98,6 +86,8 @@ def ChangeToAll(select):
     elif len(st.session_state[select]) == 0:
 
         st.session_state[select] = ["All"]
+
+#------------------------------------------------------------
 
 def ApplyRetriveDisplay():
 
@@ -124,6 +114,8 @@ def ApplyRetriveDisplay():
 
     st.session_state["vehicle_list"] = ss.search_available_vehicles(st.session_state["dates"][0], st.session_state["dates"][1], SELECTED_FILTERS)    
 
+#-----------------------------------------------------------
+
 def ResetFilters(select):
 
     if select == "All":
@@ -138,6 +130,7 @@ def ResetFilters(select):
 
         st.session_state[select] = DEFAULT_FILTERS[select]
 
+#----------------------------------------------------------------
 
 def UpdateCurrentPage(dir):
 
@@ -151,23 +144,77 @@ def UpdateCurrentPage(dir):
         st.session_state["current_page"] -= 1
         st.session_state["page_nav"][1] = False
 
+#------------------------------------------------------------------
+
+@st.dialog("Log In to proceed to booking")
+def LoginInLanding():
+
+    cus_email = st.text_input(
+
+        "Enter Email ID",
+        type = 'email'
+        
+    )
+
+    password = st.text_input(
+
+        "Password",
+        type = 'password',
+        max_chars = 36
+
+    )
+
+    st.write("")
+    st.write("")
+
+    if st.button(
+
+        "Log In",
+        type = 'primary',
+        width = 'stretch'
+
+    ):
+
+        if not cus_email or not password:
+
+            st.error("Please enter both email and password.")
+        
+        elif uh.CheckPassword("customer", cus_email, password):
+
+            st.session_state["Cus_Email"] = cus_email
+            st.session_state["Cus_Name"] = uh.GetCustomerName(cus_email)
+            st.session_state["Cus_ID"] = uh.GetCustomerId(cus_email)
+            st.session_state["auth"] = "User"
+            
+            st.rerun()
+
+        else:
+
+            st.error("Incorrect Details! Try again")
+
 def BookCar(vehicle):
 
     st.session_state["f_dates"] = [st.session_state["dates"][0], st.session_state["dates"][1]]
     st.session_state["selected_vehicle"] = vehicle
-    st.switch_page("pages/7_UserBooking.py")
 
-#initialise data for first time
+    if st.session_state["auth"] == "Guest":
+
+        LoginInLanding()
+
+    elif st.session_state["auth"] == "User":
+
+        st.switch_page("views/7_UserBooking.py")
+
+if st.session_state["auth"] == "User" and "selected_vehicle" in st.session_state:
+
+    st.switch_page("views/7_UserBooking.py")
+
+#--------------------------------------------------------------------
+
 if st.session_state["first_time"]:
 
     ApplyRetriveDisplay()
     st.session_state["first_time"] = False
-
-#==============Login auth==================
-
-if "auth" not in st.session_state or st.session_state.auth == False:
-
-    ClearAndLogOut()
 
 #==========================================
 
@@ -331,7 +378,7 @@ with col_filters:
             col1.multiselect(
 
                 "Models:",
-                options = uh.get_models(st.session_state["brand"]),
+                options = uh.GetModels(st.session_state["brand"]),
                 key = "model",
 
             )
@@ -375,6 +422,19 @@ with col_filters:
 
             )
 
+    st.divider()
+
+    if st.button(
+
+        "Back",
+        icon = ":material/arrow_back:",
+        type = 'primary',
+        width = 'stretch'
+
+    ):
+        st.session_state["auth"] = "No_Auth"
+        st.rerun()
+
 #================Col CAR VIEW=================
 
 index = st.session_state["current_page"]
@@ -389,7 +449,7 @@ if index == 1:
 
 with col_main:
 
-    col_title, col_settings = st.columns([15,1], vertical_alignment = 'center')
+    col_title, col_account = st.columns([10,1], vertical_alignment = 'center')
 
     with col_title:
 
@@ -400,17 +460,51 @@ with col_main:
 
         ) 
 
-    with col_settings:
+    with col_account:
 
-        with st.popover("", icon=":material/settings:", key="settings", width = 'content'):
-            
-            if st.button(":green[Profile]", width="stretch"):
+        if st.session_state["auth"] == "User":
 
-                st.switch_page("pages/8_UserProfile.py")
+            with st.popover(
                 
-            if st.button(":red[Log] Out", width="stretch"):
+                "",
+                icon = ":material/account_circle:", 
+                key = "account", 
+                width = 'content'
 
-                ClearAndLogOut()
+            ):
+
+                st.markdown(f"### :red[Hi]! {st.session_state.get("Cus_Name")}")
+                
+                if st.button(
+
+                    "Your :green[Bookings]", 
+                    width = "stretch"
+                
+                ):
+
+                    st.switch_page("views/8_UserProfile.py")
+                    
+                if st.button(
+
+                    ":red[Log] Out",
+                    width="stretch"
+                
+                ):
+
+                    uh.ClearAndLogOut()
+
+        else:
+
+            if st.button(
+
+                ":green[Log] In",
+                icon = ':material/login:',
+                type = 'secondary'
+
+            ):
+
+                st.session_state["auth"] = "LoggingInUser"
+                st.rerun()
                 
     st.divider()
 
@@ -424,7 +518,7 @@ with col_main:
                 
         with col:
             
-            with st.container(border=True):
+            with st.container(border = True):
                 
                 st.markdown(f"### {16*(index-1) + idx + 1}) {vehicle["brand"]} {vehicle["model_name"]}", text_alignment = 'left')
                 st.html(f"<h4 style='text-align: left; color: #FF5555; margin: 0.5;'> {vehicle["registration_no"]} </h4>")
@@ -457,6 +551,7 @@ with col_main:
 
                     st.write("")
                     st.write("")
+
                     st.markdown(f"<h4 style='text-align: right; margin: 0.5; color: #2E7D32;'>₹{vehicle["daily_rate"]:,}/ day</h4>", unsafe_allow_html=True)
                     
                 st.write("") 
