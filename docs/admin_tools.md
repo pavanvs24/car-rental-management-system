@@ -60,6 +60,11 @@ Filters:
 Returns a list of dicts: `vehicle_id, registration_no, status, odometer, model_id, brand, model_name, fuel_type, transmission, seats, daily_rate`.
 Ordered by `vehicle_id`.
 
+### `list_vehicle_models()`
+All car models in the catalogue, for dropdowns (for example in the "add vehicle" form).
+Returns a list of dicts: `model_id, brand, model_name, fuel_type, transmission, seats, daily_rate`.
+Ordered by brand, then model name.
+
 ---
 
 ## Changing data
@@ -89,6 +94,12 @@ Moves a confirmed booking to another car.
 Returns a dict: `booking_id, old_vehicle_id, new_vehicle_id`.
 
 Raises: `Booking not found.`, `Booking is not confirmed.`, `Booking already has a rental.`, `No other vehicle of the same model is free for these dates.`, `Cannot reassign to same vehicle.`, `Vehicle not found.`, `Vehicle is not available.`, `Vehicle has another confirmed booking in these dates.`
+
+### `delete_vehicle(vehicle_id)`
+Deletes a car that has no booking history, for example one added by mistake. A car with any booking cannot be deleted, so use `set_vehicle_status` with `UNAVAILABLE` for those.
+Returns a dict: `{"vehicle_id": ...}`.
+
+Raises: `Vehicle not found.`, `Vehicle has booking history. Mark it unavailable instead.`
 
 ---
 
