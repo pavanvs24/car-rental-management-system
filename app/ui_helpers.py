@@ -1,6 +1,8 @@
 import streamlit as st
 import datetime as dt
 import bcrypt as bt
+import math
+from decimal import Decimal
 from db import get_connection
 from typing import Any, cast
 from typing_extensions import LiteralString
@@ -90,7 +92,11 @@ def GetFilterOptions() -> dict[str,Any]:
 
                 if col in ("seats", "min_rate", "max_rate"):
 
-                    filter_options.setdefault(col, []).append(int(val))
+                    number = Decimal(val)
+
+                    number = math.ceil(number) if col == "max_rate" else math.floor(number)
+
+                    filter_options.setdefault(col, []).append(int(number))
 
                 else:
 
