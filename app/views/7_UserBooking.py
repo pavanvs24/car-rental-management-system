@@ -4,6 +4,7 @@ import services as ss
 import bcrypt as bt
 import time as te
 import ui_helpers as uh
+from decimal import Decimal
 
 #===============PAGE==================
 
@@ -189,8 +190,7 @@ with col2:
             st.markdown(f"#### :&nbsp;&nbsp;&nbsp;&nbsp;{st.session_state["f_dates"][1].strftime("%d-%m-%Y")}")
             st.markdown(f"#### :&nbsp;&nbsp;&nbsp;&nbsp;{Days}")
             st.markdown(f"#### :&nbsp;&nbsp;&nbsp;&nbsp;₹{Total}")
-            st.markdown(f"#### :&nbsp;&nbsp;&nbsp;&nbsp;₹{0.2*Total}")
-
+            st.markdown(f"#### :&nbsp;&nbsp;&nbsp;&nbsp;₹{(Decimal('0.2') * Total).quantize(Decimal('0.01'))}")
         st.divider()
         st.write("")
         
