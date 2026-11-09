@@ -2,7 +2,7 @@ from datetime import date,datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
-from app.db import get_connection
+from db import get_connection
 
 # Share of the total rental cost collected as the advance payment
 # when the caller does not give an explicit amount.
