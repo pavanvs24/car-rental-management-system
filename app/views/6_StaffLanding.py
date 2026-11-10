@@ -3,6 +3,8 @@ import datetime as dt
 import admin_services as admin
 import services as ss
 import ui_helpers as uh
+import math
+from decimal import Decimal
 
 #==========================================
 
@@ -467,9 +469,9 @@ elif current_tab == "Ops":
         ):
             try:
 
-                charge_val = str(float(r_charge)) 
+                charge_val = Decimal(str(r_charge)).quantize(Decimal("0.01"))
 
-                res = ss.process_return(r_reg, st.session_state["Staff_ID"], int(r_odo), r_date, int(charge_val))
+                res = ss.process_return(r_reg, st.session_state["Staff_ID"], int(r_odo), r_date, charge_val)
                 
                 st.success(f"Return processed! Final amount: ₹{res['final_amount']}")
 

@@ -252,7 +252,7 @@ def list_bookings(filters=None, limit=100, offset=0):
         JOIN vehicle_model vm
         ON vm.model_id = v.model_id
         WHERE {where}
-        ORDER BY b.start_date DESC, b.booking_id DESC
+        ORDER BY b.start_date, b.booking_id
         LIMIT %s OFFSET %s
     """
 

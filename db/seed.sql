@@ -16,28 +16,40 @@ INSERT INTO vehicle_model (brand, model_name, fuel_type, transmission, seats, da
 ('Toyota', 'Innova', 'DIESEL', 'MANUAL', 7, 4000),
 ('Tata', 'Nexon EV', 'ELECTRIC', 'AUTOMATIC', 5, 3000);
 
+-- Vehicles 2, 5 and 6 are never booked (they show up in the "never booked" query).
+-- Vehicle 7 is out with a customer and overdue.
 INSERT INTO vehicle (model_id, registration_no, status, odometer) VALUES
 (1, 'KA01AB1001', 'AVAILABLE', 10450),
 (1, 'KA01AB1002', 'AVAILABLE', 5000),
 (2, 'KA01AB2001', 'RENTED', 25000),
 (3, 'KA01AB3001', 'AVAILABLE', 40000),
 (4, 'KA01AB4001', 'AVAILABLE', 3000),
-(1, 'KA01AB1003', 'UNAVAILABLE', 60000);
+(1, 'KA01AB1003', 'UNAVAILABLE', 60000),
+(2, 'KA01AB2002', 'RENTED', 18000);
 
 -- Booking 1: past, completed, returned 1 day late
 -- Booking 2: car currently out with the customer
 -- Booking 3: future booking, not picked up yet
+-- Booking 4: car still out and overdue by 3 days (Ravi: second booking)
+-- Booking 5: older completed trip (Asha: second booking)
 INSERT INTO booking (customer_id, vehicle_id, booking_date, start_date, end_date, status) VALUES
 (1, 1, CURRENT_DATE - 15, CURRENT_DATE - 10, CURRENT_DATE - 8, 'COMPLETED'),
 (2, 3, CURRENT_DATE - 5,  CURRENT_DATE - 1,  CURRENT_DATE + 2, 'CONFIRMED'),
-(3, 4, CURRENT_DATE,      CURRENT_DATE + 5,  CURRENT_DATE + 8, 'CONFIRMED');
+(3, 4, CURRENT_DATE,      CURRENT_DATE + 5,  CURRENT_DATE + 8, 'CONFIRMED'),
+(2, 7, CURRENT_DATE - 10, CURRENT_DATE - 6,  CURRENT_DATE - 3, 'CONFIRMED'),
+(1, 1, CURRENT_DATE - 65, CURRENT_DATE - 60, CURRENT_DATE - 58, 'COMPLETED');
 
 INSERT INTO rental (booking_id, pickup_staff_id, return_staff_id, pickup_date, pickup_odometer, return_date, return_odometer, late_charge, other_charge, status) VALUES
 (1, 1, 2, CURRENT_DATE - 10, 10000, CURRENT_DATE - 7, 10450, 500, 0, 'COMPLETED'),
-(2, 1, NULL, CURRENT_DATE - 1, 25000, NULL, NULL, 0, 0, 'ACTIVE');
+(2, 1, NULL, CURRENT_DATE - 1, 25000, NULL, NULL, 0, 0, 'ACTIVE'),
+(4, 1, NULL, CURRENT_DATE - 6, 18000, NULL, NULL, 0, 0, 'ACTIVE'),
+(5, 1, 2, CURRENT_DATE - 60, 9500, CURRENT_DATE - 58, 9900, 0, 0, 'COMPLETED');
 
 INSERT INTO payment (booking_id, rental_id, transaction_type, amount, paid_at) VALUES
 (1, NULL, 'ADVANCE', 1000, NOW() - INTERVAL '15 days'),
 (1, 1, 'FINAL', 5500, NOW() - INTERVAL '7 days'),
 (2, NULL, 'ADVANCE', 1500, NOW() - INTERVAL '5 days'),
-(3, NULL, 'ADVANCE', 2000, NOW());
+(3, NULL, 'ADVANCE', 2000, NOW()),
+(4, NULL, 'ADVANCE', 2800, NOW() - INTERVAL '10 days'),
+(5, NULL, 'ADVANCE', 1200, NOW() - INTERVAL '65 days'),
+(5, 4, 'FINAL', 4800, NOW() - INTERVAL '58 days');
